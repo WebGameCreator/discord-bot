@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
+import { Client, GatewayIntentBits, EmbedBuilder, Events } from "discord.js";
 import * as cheerio from "cheerio";
 
 const client = new Client({
@@ -105,7 +105,7 @@ async function getMenu() {
 
 }
 
-client.once("ready", async () => {
+client.once(Events.ClientReady, async () => {
     const commands = [
         {
             name: "menu",
@@ -120,7 +120,7 @@ client.once("ready", async () => {
     }
 });
 
-client.on("interactionCreate", async (interaction) => {
+client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     if (interaction.commandName === "menu") {
