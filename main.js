@@ -1,17 +1,11 @@
 import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
 import * as cheerio from "cheerio";
 
-const CHANNEL_ID = ["1503697548441948263", "1421183909135253575"];
-
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
-    ]
+    intents: [GatewayIntentBits.Guilds]
 });
 
-async function getMenu(command) {
+async function getMenu() {
     const html = await fetch("https://ssl.education.lu/eRestauration/CustomerServices/Menu", {
         "headers": {
             "cookie": "CustomerServices.Restopolis.SelectedRestaurant=52;"
@@ -108,27 +102,42 @@ async function getMenu(command) {
     embed.setImage("https://larecette.net/wp-content/uploads/2026/01/fBo8OpImWH-1768310951-1200x900.jpeg");
 
     return embed;
+
 }
 
-async function processCommand(input) {
-    if (!input || input.charAt(0) !== ".") return null;
-    const [command, ...args] = input.substring(1).split(" ");
-    if (command === "menu") return await getMenu(...args);
-    console.error("Invalid command");
-    return null;
-}
+client.once("ready", async () => {
+    const commands = [
+        {
+            name: "menu",
+            description: "Get today's menu",
+        }
+    ];
 
-client.on("messageCreate", async (message) => {
-    if (message.author.bot || !CHANNEL_ID.includes(message.channel.id)) return;
-    const responseEmbed = await processCommand(message.content.trim());
-    if (responseEmbed == null) {
-        console.error("An error occurred");
-        return;
-    }
     try {
-        await message.channel.send({ embeds: [responseEmbed] });
+        await client.application.commands.set(commands);
     } catch (error) {
-        console.error("Error sending message:", error);
+        console.error("Failed to register commands:", error);
+    }
+});
+
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === "menu") {
+
+        await interaction.deferReply();
+
+        const responseEmbed = await getMenu();
+        if (responseEmbed == null) {
+            console.error("Failed to get menu");
+            return;
+        }
+
+        try {
+            await interaction.editReply({ embeds: [responseEmbed] });
+        } catch (error) {
+            console.error("Error sending response:", error);
+        }
     }
 });
 
