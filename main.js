@@ -1,5 +1,8 @@
 import { Client, GatewayIntentBits, EmbedBuilder, Events } from "discord.js";
 import * as cheerio from "cheerio";
+import cron from "node-cron";
+
+const SUBSCRIBED_CHANNEL_ID = "1503697548441948263";
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
@@ -118,6 +121,24 @@ client.once(Events.ClientReady, async () => {
     } catch (error) {
         console.error("Failed to register commands:", error);
     }
+
+    cron.schedule("30 7 * * *", async () => {
+        try {
+            const channel = await client.channels.fetch(SUBSCRIBED_CHANNEL_ID);
+
+            const responseEmbed = await getMenu();
+            if (responseEmbed) {
+                await channel.send({ embeds: [responseEmbed] });
+            } else {
+                console.error("Failed to fetch menu for scheduled broadcast.");
+            }
+        } catch (error) {
+            console.error("Error during daily menu broadcast:", error);
+        }
+    }, {
+        scheduled: true,
+        timezone: "Europe/Luxembourg"
+    });
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
