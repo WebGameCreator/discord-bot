@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, EmbedBuilder, Events } from "discord.js";
+import { Client, GatewayIntentBits, EmbedBuilder, Events, AttachmentBuilder } from "discord.js";
 import * as cheerio from "cheerio";
 import cron from "node-cron";
 
@@ -65,6 +65,8 @@ async function getMenu() {
         }
     }
 
+    const hasQuinoa = menuData["Féculents"].some(item => item.toLowerCase().includes("quinoa"));
+
     if (menuData["Non-végétarien"].length === 1 && menuData["Féculents"].length === 1 && menuData["Légumes"] && menuData["Légumes"].length === 1) {
         menuData["Menu du jour"] = [
             `${menuData["Non-végétarien"][0]} avec ${menuData["Féculents"][0].toLowerCase()} et ${menuData["Légumes"][0].toLowerCase()}`
@@ -102,10 +104,18 @@ async function getMenu() {
         return null;
     }
 
-    embed.setImage("https://larecette.net/wp-content/uploads/2026/01/fBo8OpImWH-1768310951-1200x900.jpeg");
+    const messageFiles = [];
 
-    return embed;
+    if (hasQuinoa) {
+        const quinoaFile = new AttachmentBuilder('./quinoa.gif', { name: 'quinoa.gif' });
+        messageFiles.push(quinoaFile);
 
+        embed.setImage("attachment://quinoa.gif");
+    } else {
+        embed.setImage("https://larecette.net/wp-content/uploads/2026/01/fBo8OpImWH-1768310951-1200x900.jpeg");
+    }
+
+    return { embeds: [embed], files: messageFiles };
 }
 
 client.once(Events.ClientReady, async () => {
@@ -126,9 +136,9 @@ client.once(Events.ClientReady, async () => {
         try {
             const channel = await client.channels.fetch(SUBSCRIBED_CHANNEL_ID);
 
-            const responseEmbed = await getMenu();
-            if (responseEmbed) {
-                await channel.send({ embeds: [responseEmbed] });
+            const menuPayload = await getMenu();
+            if (menuPayload) {
+                await channel.send(menuPayload);
             } else {
                 console.error("Failed to fetch menu for scheduled broadcast.");
             }
@@ -148,14 +158,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         await interaction.deferReply();
 
-        const responseEmbed = await getMenu();
-        if (responseEmbed == null) {
+        const menuPayload = await getMenu();
+        if (menuPayload == null) {
             console.error("Failed to get menu");
             return;
         }
 
         try {
-            await interaction.editReply({ embeds: [responseEmbed] });
+            await interaction.editReply(menuPayload);
         } catch (error) {
             console.error("Error sending response:", error);
         }
