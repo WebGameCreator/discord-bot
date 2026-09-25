@@ -1,106 +1,41 @@
-import { Client, GatewayIntentBits, EmbedBuilder, Events, AttachmentBuilder, ActionRowBuilder, StringSelectMenuBuilder } from "discord.js";
+import { Client, EmbedBuilder, Events, AttachmentBuilder, GatewayIntentBits } from "discord.js";
 import * as cheerio from "cheerio";
 import cron from "node-cron";
+import { CANTEENS } from "./canteens.js";
 
-const SUBSCRIBED_CHANNEL_ID = "1503697548441948263";
+// ⚙️ SETTINGS — everything you might need to change before deploying.
+const GUILD_ID = "YOUR_GUILD_ID";         // your server's ID; /menu is registered inside this server only
+const DAILY_POST_CHANNEL_ID = "1503697548441948263";
+const DAILY_POST_SCHEDULE = "30 7 * * *"; // every day at 07:30
+const TIMEZONE = "Europe/Luxembourg";
+const MENU_URL = "https://ssl.education.lu/eRestauration/CustomerServices/Menu";
+const EMBED_COLOR = 0x00AE86;
+
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-const CANTEENS = {
-    "52": {
-        label: "Restaurant",
-        description: "View the main lunch menu",
-        title: "🍴 Menu Restaurant",
-        categories: {
-            "Menu du jour": "🍔 Menu du jour",
-            "Non-végétarien": "🍖 Non-végétarien",
-            "Féculents": "🥔 Féculents",
-            "Légumes": "🥦 Légumes",
-            "Végétarien": "🥗 Végétarien",
-            "Végan": "🌱 Végan",
-            "Grillade": "🔥 Grillade",
-            "Pizza": "🍕 Pizza",
-            "Dessert": "🍰 Dessert"
-        },
-        transform: (menu) => {
-            const vegan = menu["Végan"] || [];
-            const vege = menu["Végétarien"] || [];
-            let nonVege = menu["Non-végétarien"] || [];
-
-            nonVege = nonVege.filter(item => !vegan.includes(item) && !vege.includes(item));
-            menu["Végétarien"] = vege.filter(item => !vegan.includes(item) && !/pizza\s*margherit/i.test(item));
-
-            ["Grillade", "Pizza"].forEach(category => {
-                const keyword = category === "Grillade" ? "grill" : "pizza";
-                const matches = nonVege.filter(e => e.toLowerCase().includes(keyword));
-
-                if (matches.length === 1) {
-                    const matchIdx = nonVege.findIndex(e => e.toLowerCase().includes(keyword));
-                    menu[category] = [nonVege.splice(matchIdx, 1)[0]];
-                }
-            });
-
-            menu["Non-végétarien"] = nonVege;
-
-            if (nonVege.length === 1 && menu["Féculents"]?.length === 1 && menu["Légumes"]?.length === 1) {
-                menu["Menu du jour"] = [`${nonVege[0]} avec ${menu["Féculents"][0].toLowerCase()} et ${menu["Légumes"][0].toLowerCase()}`];
-                delete menu["Non-végétarien"];
-                delete menu["Féculents"];
-                delete menu["Légumes"];
-            }
-            return menu;
-        },
-        getImage: (menuData) => {
-            const hasQuinoa = JSON.stringify(menuData).toLowerCase().includes("quinoa");
-            return hasQuinoa
-                ? { url: "attachment://quinoa.gif", files: [new AttachmentBuilder('./quinoa.gif', { name: 'quinoa.gif' })] }
-                : { url: "https://larecette.net/wp-content/uploads/2026/01/fBo8OpImWH-1768310951-1200x900.jpeg", files: [] };
-        }
-    },
-    "53": {
-        label: "Cafeteria",
-        description: "View grab-and-go snacks",
-        title: "🥪 Menu Cafétéria",
-        categories: {
-            "Snack à emporter": "🥡 Snack à emporter"
-        },
-        transform: (menu) => menu,
-        getImage: () => ({
-            url: "https://portal.education.lu/portals/88/Images/BANNERS/restopolis-banners-menu.jpg",
-            files: []
-        })
-    }
-};
-
-function getDropdownRow(selectedId = "52") {
-    const select = new StringSelectMenuBuilder()
-        .setCustomId("select-restaurant")
-        .setPlaceholder("Choose a dining option...")
-        .addOptions(Object.entries(CANTEENS).map(([id, cfg]) => ({
-            label: cfg.label,
-            description: cfg.description,
-            value: id,
-            default: String(selectedId) === id
-        })));
-
-    return new ActionRowBuilder().addComponents(select);
-}
-
-async function getMenu(restaurantId = "52") {
-    const config = CANTEENS[String(restaurantId)];
+// Fetches one canteen's menu from the portal and returns it as
+// { courseName: [dish, ...] } — or null if the page can't be read or the
+// canteen is closed today.
+async function fetchMenu(restaurantId) {
+    const config = CANTEENS[restaurantId];
     if (!config) return null;
 
-    const html = await fetch("https://ssl.education.lu/eRestauration/CustomerServices/Menu", {
-        headers: { "cookie": `CustomerServices.Restopolis.SelectedRestaurant=${restaurantId};` }
-    }).then(r => r.text());
+    const response = await fetch(MENU_URL, {
+        headers: { "cookie": `CustomerServices.Restopolis.SelectedRestaurant=${restaurantId};` },
+        signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) return null;
 
-    const $ = cheerio.load(html);
+    const $ = cheerio.load(await response.text());
+
     const dayContainers = $("div.formulaeContainer, div.closed");
     if (dayContainers.length !== 7) return null;
 
+    // Containers are Monday-first; convert JS's Sunday-first getDay() into an index.
     const todayContainer = $(dayContainers[(new Date().getDay() + 6) % 7]);
 
-    let menuData = {};
-    let currentCourse = Object.keys(config.categories)[0];
+    const menuData = {};
+    let currentCourse = config.categories[0];
 
     todayContainer.find(".course-name, .product-name").each((_, el) => {
         const $el = $(el);
@@ -115,64 +50,87 @@ async function getMenu(restaurantId = "52") {
         }
     });
 
-    menuData = config.transform(menuData);
-    const { url, files } = config.getImage(menuData);
+    return config.transform(menuData);
+}
 
-    const embed = new EmbedBuilder()
-        .setTitle(config.title)
-        .setColor(0x00AE86)
-        .setImage(url)
-        .setTimestamp();
+// Builds the message payload — one embed per canteen — or null when no
+// canteen has anything on the menu today.
+async function buildMenuMessage() {
+    const embeds = [];
+    const files = [];
 
-    for (const [courseKey, displayTitle] of Object.entries(config.categories)) {
-        const items = menuData[courseKey];
-        if (items && items.length > 0) {
-            embed.addFields({ name: displayTitle, value: items.join("\n"), inline: false });
+    for (const [restaurantId, config] of Object.entries(CANTEENS)) {
+        const menuData = await fetchMenu(restaurantId);
+        if (!menuData) continue;
+
+        const embed = new EmbedBuilder()
+            .setTitle(config.title)
+            .setColor(EMBED_COLOR)
+            .setTimestamp();
+
+        for (const category of config.categories) {
+            const items = menuData[category];
+            if (items && items.length > 0) {
+                embed.addFields({ name: category, value: items.join("\n"), inline: false });
+            }
         }
+
+        if (!embed.data.fields || embed.data.fields.length === 0) continue;
+
+        // Easter egg: if quinoa is on the shown menu, attach the quinoa GIF.
+        const shownItems = config.categories.flatMap(category => menuData[category] || []);
+        if (shownItems.some(item => item.toLowerCase().includes("quinoa"))) {
+            embed.setImage("attachment://quinoa.gif");
+            if (!files.some(file => file.name === "quinoa.gif")) {
+                files.push(new AttachmentBuilder("./quinoa.gif", { name: "quinoa.gif" }));
+            }
+        }
+
+        embeds.push(embed);
     }
 
-    if (!embed.data.fields || embed.data.fields.length === 0) return null;
+    return embeds.length > 0 ? { embeds, files } : null;
+}
 
-    return { embeds: [embed], files };
+async function postDailyMenu() {
+    try {
+        const channel = await client.channels.fetch(DAILY_POST_CHANNEL_ID);
+        const payload = await buildMenuMessage();
+        if (payload) await channel.send(payload);
+    } catch (error) {
+        console.error("Daily menu post failed", error);
+    }
 }
 
 client.once(Events.ClientReady, async () => {
-    await client.application.commands.set([{ name: "menu", description: "Get today's menu" }]);
+    try {
+        const guild = await client.guilds.fetch(GUILD_ID);
+        await guild.commands.set([{ name: "menu", description: "Get today's menu" }]);
 
-    cron.schedule("30 7 * * *", async () => {
-        try {
-            const channel = await client.channels.fetch(SUBSCRIBED_CHANNEL_ID);
-            const payload = await getMenu("52");
-            if (payload) {
-                payload.components = [getDropdownRow("52")];
-                await channel.send(payload);
-            }
-        } catch (e) { console.error("Cron job failed", e); }
-    }, { scheduled: true, timezone: "Europe/Luxembourg" });
+        // Drop the old globally registered command so /menu only exists in this server.
+        await client.application.commands.set([]);
+    } catch (error) {
+        console.error("Could not register the /menu command — is GUILD_ID set correctly?", error);
+    }
+
+    cron.schedule(DAILY_POST_SCHEDULE, postDailyMenu, { scheduled: true, timezone: TIMEZONE });
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-    if (interaction.isChatInputCommand() && interaction.commandName === "menu") {
+    if (!interaction.isChatInputCommand() || interaction.commandName !== "menu") return;
+
+    try {
         await interaction.deferReply();
-        const payload = await getMenu("52");
+        const payload = await buildMenuMessage();
 
-        if (!payload) return interaction.editReply("Failed to retrieve today's menu.");
-
-        payload.components = [getDropdownRow("52")];
-        await interaction.editReply(payload);
-        return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId === "select-restaurant") {
-        const targetId = interaction.values[0];
-        const payload = await getMenu(targetId);
-
-        if (!payload) {
-            return interaction.update({ content: "Menu unavailable for this option.", embeds: [], components: [getDropdownRow(targetId)] });
+        if (payload) {
+            await interaction.editReply({ content: "", ...payload });
+        } else {
+            await interaction.editReply({ content: "Failed to retrieve today's menu." });
         }
-
-        payload.components = [getDropdownRow(targetId)];
-        await interaction.update(payload);
+    } catch (error) {
+        console.error("/menu failed", error);
+        await interaction.editReply({ content: "Failed to retrieve today's menu." }).catch(() => {});
     }
 });
 
